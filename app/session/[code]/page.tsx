@@ -20,6 +20,9 @@ export default function SessionPage() {
   const [tickKey, setTickKey] = useState(0)
   const [error, setError] = useState('')
   const [audioUnlocked, setAudioUnlocked] = useState(false)
+  // showJoinOverlay: iOS requires a tap before ANY audio/TTS works.
+  // We show a fullscreen overlay immediately on page load and dismiss on tap.
+  const [showJoinOverlay, setShowJoinOverlay] = useState(true)
 
   // Single persistent audio element — always in DOM so ref is always valid
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -32,14 +35,15 @@ export default function SessionPage() {
     getServerTimeOffset().then(offset => setTimeOffset(offset))
   }, [])
 
-  // Unlock audio + TTS on iOS/Chrome — requires a user gesture
+  // Unlock audio + TTS — must be called from a user gesture (tap)
   const unlockAudio = useCallback(() => {
-    if (audioUnlocked) return
-    // Unlock TTS by speaking a silent utterance
+    // Unlock Web Speech API (TTS) with a silent utterance
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       const u = new SpeechSynthesisUtterance(' ')
       u.volume = 0
       window.speechSynthesis.speak(u)
+      // Pre-load voices
+      window.speechSynthesis.getVoices()
     }
     // Unlock HTML audio element
     const audio = audioRef.current
@@ -52,7 +56,8 @@ export default function SessionPage() {
       }).catch(() => {})
     }
     setAudioUnlocked(true)
-  }, [audioUnlocked])
+    setShowJoinOverlay(false)
+  }, [])
 
   const updateCountdown = useCallback((launchAt: string) => {
     if (timerRef.current) clearInterval(timerRef.current)
@@ -186,6 +191,32 @@ export default function SessionPage() {
     }
   }
 
+  // iOS AUDIO UNLOCK — fullscreen overlay on first load, must tap before anything plays
+  if (showJoinOverlay) {
+    return (
+      <main
+        className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-6 cursor-pointer"
+        onClick={unlockAudio}
+      >
+        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
+        <div className="text-center">
+          <div className="text-7xl mb-8">📣</div>
+          <h1 className="text-4xl font-black uppercase text-[#FF4D00] mb-4 tracking-widest">
+            {isLeader ? 'You\'re Live' : 'Join Chant'}
+          </h1>
+          <p className="text-gray-400 mb-10 text-lg">Tap to enable sound</p>
+          <button
+            onClick={unlockAudio}
+            className="px-12 py-5 bg-[#FF4D00] text-white text-2xl font-black uppercase tracking-widest rounded-2xl active:scale-95 transition-all shadow-lg shadow-[#FF4D00]/40 animate-pulse"
+          >
+            TAP TO JOIN
+          </button>
+          <p className="mt-6 text-gray-600 text-sm uppercase tracking-widest">Session: {code}</p>
+        </div>
+      </main>
+    )
+  }
+
   // LOADING
   if (phase === 'loading') {
     return (
@@ -256,18 +287,8 @@ export default function SessionPage() {
             {countdown}
           </div>
 
-          {/* Audio unlock prompt — critical for iOS/Chrome */}
-          {session?.audio_url && !audioUnlocked && (
-            <button
-              onClick={unlockAudio}
-              className="mt-4 px-6 py-2 bg-[#FF4D00]/20 border border-[#FF4D00] rounded-full text-[#FF4D00] text-sm uppercase tracking-widest font-bold animate-pulse"
-            >
-              🔊 Tap to enable sound
-            </button>
-          )}
-          {session?.audio_url && audioUnlocked && (
-            <p className="mt-4 text-green-500 text-sm uppercase tracking-widest">🔊 Sound ready</p>
-          )}
+          {/* Sound is always unlocked by this point due to join overlay */}
+          <p className="mt-4 text-green-500 text-sm uppercase tracking-widest">🔊 Sound ready</p>
 
           <p className="text-gray-500 uppercase tracking-widest text-sm mt-6">Get ready!</p>
 
