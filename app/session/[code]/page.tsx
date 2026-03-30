@@ -19,7 +19,9 @@ export default function SessionPage() {
   const [isFlashing, setIsFlashing] = useState(false)
   const [tickKey, setTickKey] = useState(0)
   const [error, setError] = useState('')
+  const [audioUnlocked, setAudioUnlocked] = useState(false)
 
+  // Single persistent audio element — always in DOM so ref is always valid
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const launchedRef = useRef(false)
@@ -30,6 +32,23 @@ export default function SessionPage() {
     getServerTimeOffset().then(offset => setTimeOffset(offset))
   }, [])
 
+  // Unlock audio on iOS/Chrome by playing a silent buffer on first user tap
+  const unlockAudio = useCallback(() => {
+    if (audioUnlocked) return
+    const audio = audioRef.current
+    if (!audio) return
+    // Play + immediately pause to satisfy browser gesture requirement
+    audio.volume = 0
+    audio.play().then(() => {
+      audio.pause()
+      audio.currentTime = 0
+      audio.volume = 1
+      setAudioUnlocked(true)
+    }).catch(() => {
+      // Some browsers block even this — user needs to tap again
+    })
+  }, [audioUnlocked])
+
   const updateCountdown = useCallback((launchAt: string) => {
     if (timerRef.current) clearInterval(timerRef.current)
 
@@ -39,7 +58,6 @@ export default function SessionPage() {
       const remaining = Math.max(0, Math.ceil((launch - now) / 1000))
       setCountdown(remaining)
 
-      // Trigger tick animation when number changes
       if (prevCountdownRef.current !== remaining) {
         setTickKey(k => k + 1)
         prevCountdownRef.current = remaining
@@ -57,9 +75,14 @@ export default function SessionPage() {
     setPhase('live')
     setIsFlashing(true)
     setTimeout(() => setIsFlashing(false), 2000)
-    // Play audio if available
-    if (audioRef.current) {
-      audioRef.current.play().catch(() => {})
+    // Play audio — element is already in DOM and pre-loaded
+    const audio = audioRef.current
+    if (audio && audio.src) {
+      audio.currentTime = 0
+      audio.volume = 1
+      audio.play().catch((err) => {
+        console.warn('Audio play blocked:', err)
+      })
     }
   }
 
@@ -86,6 +109,14 @@ export default function SessionPage() {
     }
   }, [code, timeOffset])
 
+  // Update audio src whenever session changes
+  useEffect(() => {
+    if (session?.audio_url && audioRef.current) {
+      audioRef.current.src = session.audio_url
+      audioRef.current.load()
+    }
+  }, [session?.audio_url])
+
   async function loadSession() {
     const { data, error: dbError } = await supabase
       .from('sessions')
@@ -111,7 +142,6 @@ export default function SessionPage() {
       const now = Date.now() + timeOffset
       const launch = new Date(s.launch_at).getTime()
       if (now >= launch) {
-        // Already past launch time
         if (!launchedRef.current) {
           launchedRef.current = true
           triggerLaunch()
@@ -133,6 +163,8 @@ export default function SessionPage() {
   if (phase === 'loading') {
     return (
       <main className="min-h-screen bg-[#0D0D0D] flex items-center justify-center">
+        {/* Audio always present in DOM */}
+        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
         <div className="text-center">
           <div className="w-16 h-16 border-4 border-[#FF4D00] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-gray-400 uppercase tracking-widest">Connecting...</p>
@@ -145,6 +177,7 @@ export default function SessionPage() {
   if (phase === 'ended' || error) {
     return (
       <main className="min-h-screen bg-[#0D0D0D] flex items-center justify-center px-4">
+        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
         <div className="text-center">
           <p className="text-[#FF4D00] text-xl font-bold mb-2">{error || 'Session Ended'}</p>
           <p className="text-gray-500 mb-6">This chant session is no longer active.</p>
@@ -162,9 +195,7 @@ export default function SessionPage() {
           isFlashing ? 'bg-[#FF4D00]' : 'bg-[#0D0D0D]'
         }`}
       >
-        {session?.audio_url && (
-          <audio ref={audioRef} src={session.audio_url} preload="auto" />
-        )}
+        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
         <div className="text-center slide-up">
           <p
             className={`text-6xl sm:text-8xl font-black uppercase leading-tight tracking-tight transition-colors duration-300 pulse-glow ${
@@ -184,10 +215,11 @@ export default function SessionPage() {
   // COUNTDOWN
   if (phase === 'countdown') {
     return (
-      <main className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-4">
-        {session?.audio_url && (
-          <audio ref={audioRef} src={session.audio_url} preload="auto" />
-        )}
+      <main
+        className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-4"
+        onClick={unlockAudio}
+      >
+        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
         <div className="text-center">
           <p className="text-gray-400 uppercase tracking-widest text-sm mb-6">Chant launches in</p>
           <div
@@ -196,9 +228,22 @@ export default function SessionPage() {
           >
             {countdown}
           </div>
+
+          {/* Audio unlock prompt — critical for iOS/Chrome */}
+          {session?.audio_url && !audioUnlocked && (
+            <button
+              onClick={unlockAudio}
+              className="mt-4 px-6 py-2 bg-[#FF4D00]/20 border border-[#FF4D00] rounded-full text-[#FF4D00] text-sm uppercase tracking-widest font-bold animate-pulse"
+            >
+              🔊 Tap to enable sound
+            </button>
+          )}
+          {session?.audio_url && audioUnlocked && (
+            <p className="mt-4 text-green-500 text-sm uppercase tracking-widest">🔊 Sound ready</p>
+          )}
+
           <p className="text-gray-500 uppercase tracking-widest text-sm mt-6">Get ready!</p>
 
-          {/* Chant preview */}
           {session?.chant_text && (
             <div className="mt-10 bg-[#1a1a1a] rounded-xl px-6 py-4 max-w-sm border border-[#333]">
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Chant</p>
@@ -213,6 +258,7 @@ export default function SessionPage() {
   // BUILDING — waiting for leader to launch
   return (
     <main className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-4">
+      <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
       <div className="text-center max-w-sm w-full">
         <div className="w-16 h-16 border-4 border-[#FF4D00] border-t-transparent rounded-full animate-spin mx-auto mb-6" />
         <p className="text-[#FF4D00] font-black uppercase tracking-widest text-lg mb-2">Waiting for Leader</p>
@@ -223,7 +269,6 @@ export default function SessionPage() {
           <p className="text-white font-black text-2xl tracking-widest">{code}</p>
         </div>
 
-        {/* Live chant text preview */}
         {session?.chant_text && (
           <div className="mt-4 bg-[#1a1a1a] rounded-xl px-6 py-4 border border-[#FF4D00]/20">
             <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Chant</p>
