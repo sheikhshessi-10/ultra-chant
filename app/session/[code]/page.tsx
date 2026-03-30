@@ -32,21 +32,26 @@ export default function SessionPage() {
     getServerTimeOffset().then(offset => setTimeOffset(offset))
   }, [])
 
-  // Unlock audio on iOS/Chrome by playing a silent buffer on first user tap
+  // Unlock audio + TTS on iOS/Chrome — requires a user gesture
   const unlockAudio = useCallback(() => {
     if (audioUnlocked) return
+    // Unlock TTS by speaking a silent utterance
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      const u = new SpeechSynthesisUtterance(' ')
+      u.volume = 0
+      window.speechSynthesis.speak(u)
+    }
+    // Unlock HTML audio element
     const audio = audioRef.current
-    if (!audio) return
-    // Play + immediately pause to satisfy browser gesture requirement
-    audio.volume = 0
-    audio.play().then(() => {
-      audio.pause()
-      audio.currentTime = 0
-      audio.volume = 1
-      setAudioUnlocked(true)
-    }).catch(() => {
-      // Some browsers block even this — user needs to tap again
-    })
+    if (audio) {
+      audio.volume = 0
+      audio.play().then(() => {
+        audio.pause()
+        audio.currentTime = 0
+        audio.volume = 1
+      }).catch(() => {})
+    }
+    setAudioUnlocked(true)
   }, [audioUnlocked])
 
   const updateCountdown = useCallback((launchAt: string) => {
@@ -71,11 +76,33 @@ export default function SessionPage() {
     }, 100)
   }, [timeOffset])
 
+  function speakChant(text: string) {
+    if (!text || typeof window === 'undefined') return
+    const synth = window.speechSynthesis
+    if (!synth) return
+    synth.cancel() // clear any queued speech
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 0.85   // slightly slower — sounds like a chant
+    utterance.pitch = 1.1
+    utterance.volume = 1
+    // Pick a loud voice if available
+    const voices = synth.getVoices()
+    const preferred = voices.find(v => v.lang.startsWith('en') && v.localService)
+    if (preferred) utterance.voice = preferred
+    synth.speak(utterance)
+  }
+
   function triggerLaunch() {
     setPhase('live')
     setIsFlashing(true)
     setTimeout(() => setIsFlashing(false), 2000)
-    // Play audio — element is already in DOM and pre-loaded
+
+    // TTS — speak the chant text on every device
+    if (session?.chant_text) {
+      speakChant(session.chant_text)
+    }
+
+    // Also play recorded audio if leader used mic
     const audio = audioRef.current
     if (audio && audio.src) {
       audio.currentTime = 0
