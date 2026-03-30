@@ -94,16 +94,18 @@ export function speakChant(text: string, onDone?: () => void): void {
   }
 }
 
-// Play ole chant — tries URL first, falls back to TTS
+// Public Supabase storage URLs — royalty-free, CC0 licensed from Pixabay
+const OLE_CHANT_URL = 'https://efuizlpummqezagtfols.supabase.co/storage/v1/object/public/audio/ole-chant.mp3'
+const COUNTDOWN_AUDIO_URL = 'https://efuizlpummqezagtfols.supabase.co/storage/v1/object/public/audio/countdown-10.mp3'
+
+export { COUNTDOWN_AUDIO_URL }
+
+// Play ole chant — tries room custom audio first, then built-in, falls back to TTS
 export function playOleChant(roomAudioUrl?: string | null, chantText?: string): void {
-  const url = roomAudioUrl || process.env.NEXT_PUBLIC_OLE_CHANT_URL || null
-  if (url) {
-    const audio = new Audio(url)
-    audio.volume = 1
-    audio.play().catch(() => speakChant(chantText || 'Olé Olé Olé'))
-  } else {
-    speakChant(chantText || 'Olé Olé Olé')
-  }
+  const url = roomAudioUrl || process.env.NEXT_PUBLIC_OLE_CHANT_URL || OLE_CHANT_URL
+  const audio = new Audio(url)
+  audio.volume = 1
+  audio.play().catch(() => speakChant(chantText || 'Olé Olé Olé'))
 }
 
 // Play a recorded audio URL

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase, getFanId, joinRoom, leaveRoom, getServerTimeOffset, Room } from '@/lib/supabase'
-import { playTick, speakNumber, requestWakeLock, releaseWakeLock } from '@/lib/audio'
+import { playTick, speakNumber, playAudioUrl, COUNTDOWN_AUDIO_URL, requestWakeLock, releaseWakeLock } from '@/lib/audio'
 import QRCodeDisplay from '@/components/QRCodeDisplay'
 
 export default function RoomPage() {
@@ -42,8 +42,11 @@ export default function RoomPage() {
     }
   }, [])
 
+  const countdownAudioFiredRef = useRef(false)
+
   const startCountdown = useCallback((launchAt: string) => {
     if (timerRef.current) clearInterval(timerRef.current)
+    countdownAudioFiredRef.current = false
     requestWakeLock()
     timerRef.current = setInterval(() => {
       const now = Date.now() + timeOffsetRef.current
@@ -52,6 +55,12 @@ export default function RoomPage() {
       setCountdown(remaining)
 
       if (prevCountRef.current !== remaining) {
+        // Fire countdown audio at T=10 (synchronized across all devices)
+        if (remaining === 10 && !countdownAudioFiredRef.current) {
+          countdownAudioFiredRef.current = true
+          playAudioUrl(COUNTDOWN_AUDIO_URL)
+        }
+        // Also play tick + TTS each second for visual feedback
         if (remaining > 0 && remaining <= 10) {
           playTick()
           speakNumber(remaining)
