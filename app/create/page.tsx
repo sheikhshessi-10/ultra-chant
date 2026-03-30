@@ -154,13 +154,9 @@ export default function CreatePage() {
       .update({ status: 'countdown', launch_at: launchAt })
       .eq('id', sessionId)
 
-    setStep('countdown')
     setIsLaunching(false)
-
-    // After countdown, push leader to live view
-    setTimeout(() => {
-      router.push(`/session/${sessionCode}?leader=1`)
-    }, secs * 1000)
+    // Redirect leader immediately — they'll tap the overlay, then watch countdown on session page
+    router.push(`/session/${sessionCode}?leader=1`)
   }
 
   const joinUrl = typeof window !== 'undefined'
