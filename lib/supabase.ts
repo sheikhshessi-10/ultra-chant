@@ -23,14 +23,24 @@ export type Participant = {
 }
 
 // Get server time offset: returns (serverTime - clientTime) in ms
+// Samples 3 times and uses the median to reduce network jitter
 export async function getServerTimeOffset(): Promise<number> {
-  const clientBefore = Date.now()
-  const { data, error } = await supabase.rpc('get_server_time')
-  const clientAfter = Date.now()
-  if (error || !data) return 0
-  const serverTime = new Date(data).getTime()
-  const clientMid = (clientBefore + clientAfter) / 2
-  return serverTime - clientMid
+  const samples: number[] = []
+  for (let i = 0; i < 3; i++) {
+    const before = Date.now()
+    const { data } = await supabase.rpc('get_server_time')
+    const after = Date.now()
+    if (data) {
+      const roundTrip = after - before
+      const serverTime = new Date(data).getTime()
+      // Estimate server time at midpoint of request
+      samples.push(serverTime + roundTrip / 2 - after)
+    }
+  }
+  if (samples.length === 0) return 0
+  // Use median to reject outliers
+  samples.sort((a, b) => a - b)
+  return samples[Math.floor(samples.length / 2)]
 }
 
 // Generate a random 6-char code like ULTRA42

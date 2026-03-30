@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { unlockAudio } from '@/lib/audio'
 
 function JoinContent() {
   const router = useRouter()
@@ -89,6 +90,9 @@ function JoinContent() {
       setLoading(false)
       return
     }
+
+    // Unlock audio from this user gesture before navigating
+    unlockAudio()
 
     // Register as participant
     await supabase.from('participants').insert({ session_id: data.id })

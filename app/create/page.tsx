@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase, generateCode } from '@/lib/supabase'
+import { unlockAudio } from '@/lib/audio'
 import QRCodeDisplay from '@/components/QRCodeDisplay'
 
 type Step = 'build' | 'session' | 'countdown'
@@ -95,6 +96,9 @@ export default function CreatePage() {
   }
 
   async function generateSession() {
+    // Unlock audio from this user gesture (leader's tap on GENERATE SESSION)
+    unlockAudio()
+
     if (!chantText.trim() && !audioBlob) {
       alert('Add a chant text or record audio first.')
       return

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import { supabase, getServerTimeOffset, Session } from '@/lib/supabase'
+import { speakChant, playAudioUrl, requestWakeLock, releaseWakeLock } from '@/lib/audio'
 
 type Phase = 'loading' | 'building' | 'countdown' | 'live' | 'ended'
 
@@ -19,48 +20,67 @@ export default function SessionPage() {
   const [isFlashing, setIsFlashing] = useState(false)
   const [tickKey, setTickKey] = useState(0)
   const [error, setError] = useState('')
-  const [audioUnlocked, setAudioUnlocked] = useState(false)
-  // showJoinOverlay: iOS requires a tap before ANY audio/TTS works.
-  // We show a fullscreen overlay immediately on page load and dismiss on tap.
-  const [showJoinOverlay, setShowJoinOverlay] = useState(true)
 
-  // Single persistent audio element — always in DOM so ref is always valid
-  const audioRef = useRef<HTMLAudioElement | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const launchedRef = useRef(false)
   const prevCountdownRef = useRef<number | null>(null)
+  const preFiredRef = useRef(false)
+  // Hold latest session in a ref so triggerLaunch can access it without stale closure
+  const sessionRef = useRef<Session | null>(null)
 
   // Get server time offset on mount
   useEffect(() => {
     getServerTimeOffset().then(offset => setTimeOffset(offset))
   }, [])
 
-  // Unlock audio + TTS — must be called from a user gesture (tap)
-  const unlockAudio = useCallback(() => {
-    // Unlock Web Speech API (TTS) with a silent utterance
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      const u = new SpeechSynthesisUtterance(' ')
-      u.volume = 0
-      window.speechSynthesis.speak(u)
-      // Pre-load voices
-      window.speechSynthesis.getVoices()
+  // Keep sessionRef in sync
+  useEffect(() => {
+    sessionRef.current = session
+  }, [session])
+
+  // Release wake lock on unmount
+  useEffect(() => {
+    return () => {
+      releaseWakeLock()
+      if (timerRef.current) clearInterval(timerRef.current)
     }
-    // Unlock HTML audio element
-    const audio = audioRef.current
-    if (audio) {
-      audio.volume = 0
-      audio.play().then(() => {
-        audio.pause()
-        audio.currentTime = 0
-        audio.volume = 1
-      }).catch(() => {})
-    }
-    setAudioUnlocked(true)
-    setShowJoinOverlay(false)
   }, [])
+
+  function triggerLaunch() {
+    setPhase('live')
+    setIsFlashing(true)
+    setTimeout(() => setIsFlashing(false), 2000)
+
+    // Set page title to chant text so it shows on lock screen
+    const chantText = sessionRef.current?.chant_text
+    if (chantText && typeof document !== 'undefined') {
+      document.title = chantText
+    }
+
+    // TTS — speak the chant 3x for stadium effect
+    if (chantText) {
+      speakChant(chantText)
+    }
+
+    // Play recorded audio if available
+    const audioUrl = sessionRef.current?.audio_url
+    if (audioUrl) {
+      playAudioUrl(audioUrl)
+    }
+
+    releaseWakeLock()
+  }
 
   const updateCountdown = useCallback((launchAt: string) => {
     if (timerRef.current) clearInterval(timerRef.current)
+
+    // Pre-warm TTS voices when countdown starts
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.getVoices()
+    }
+
+    // Request wake lock to keep screen on during countdown
+    requestWakeLock()
 
     timerRef.current = setInterval(() => {
       const now = Date.now() + timeOffset
@@ -73,50 +93,20 @@ export default function SessionPage() {
         prevCountdownRef.current = remaining
       }
 
-      if (remaining <= 0 && !launchedRef.current) {
-        launchedRef.current = true
-        clearInterval(timerRef.current!)
-        triggerLaunch()
+      // Pre-fire: when we're at 1 second, schedule exact-ms trigger for T=0
+      if (remaining <= 1 && !preFiredRef.current) {
+        preFiredRef.current = true
+        const exactMs = Math.max(0, launch - (Date.now() + timeOffset))
+        setTimeout(() => {
+          if (!launchedRef.current) {
+            launchedRef.current = true
+            clearInterval(timerRef.current!)
+            triggerLaunch()
+          }
+        }, exactMs)
       }
     }, 100)
   }, [timeOffset])
-
-  function speakChant(text: string) {
-    if (!text || typeof window === 'undefined') return
-    const synth = window.speechSynthesis
-    if (!synth) return
-    synth.cancel() // clear any queued speech
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 0.85   // slightly slower — sounds like a chant
-    utterance.pitch = 1.1
-    utterance.volume = 1
-    // Pick a loud voice if available
-    const voices = synth.getVoices()
-    const preferred = voices.find(v => v.lang.startsWith('en') && v.localService)
-    if (preferred) utterance.voice = preferred
-    synth.speak(utterance)
-  }
-
-  function triggerLaunch() {
-    setPhase('live')
-    setIsFlashing(true)
-    setTimeout(() => setIsFlashing(false), 2000)
-
-    // TTS — speak the chant text on every device
-    if (session?.chant_text) {
-      speakChant(session.chant_text)
-    }
-
-    // Also play recorded audio if leader used mic
-    const audio = audioRef.current
-    if (audio && audio.src) {
-      audio.currentTime = 0
-      audio.volume = 1
-      audio.play().catch((err) => {
-        console.warn('Audio play blocked:', err)
-      })
-    }
-  }
 
   // Load session and subscribe to changes
   useEffect(() => {
@@ -130,6 +120,7 @@ export default function SessionPage() {
         (payload) => {
           const updated = payload.new as Session
           setSession(updated)
+          sessionRef.current = updated
           handleSessionUpdate(updated)
         }
       )
@@ -140,14 +131,6 @@ export default function SessionPage() {
       if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [code, timeOffset])
-
-  // Update audio src whenever session changes
-  useEffect(() => {
-    if (session?.audio_url && audioRef.current) {
-      audioRef.current.src = session.audio_url
-      audioRef.current.load()
-    }
-  }, [session?.audio_url])
 
   async function loadSession() {
     const { data, error: dbError } = await supabase
@@ -163,6 +146,7 @@ export default function SessionPage() {
     }
 
     setSession(data as Session)
+    sessionRef.current = data as Session
     handleSessionUpdate(data as Session)
   }
 
@@ -187,42 +171,15 @@ export default function SessionPage() {
         triggerLaunch()
       }
     } else if (s.status === 'ended') {
+      releaseWakeLock()
       setPhase('ended')
     }
-  }
-
-  // iOS AUDIO UNLOCK — fullscreen overlay on first load, must tap before anything plays
-  if (showJoinOverlay) {
-    return (
-      <main
-        className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-6 cursor-pointer"
-        onClick={unlockAudio}
-      >
-        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
-        <div className="text-center">
-          <div className="text-7xl mb-8">📣</div>
-          <h1 className="text-4xl font-black uppercase text-[#FF4D00] mb-4 tracking-widest">
-            {isLeader ? 'You\'re Live' : 'Join Chant'}
-          </h1>
-          <p className="text-gray-400 mb-10 text-lg">Tap to enable sound</p>
-          <button
-            onClick={unlockAudio}
-            className="px-12 py-5 bg-[#FF4D00] text-white text-2xl font-black uppercase tracking-widest rounded-2xl active:scale-95 transition-all shadow-lg shadow-[#FF4D00]/40 animate-pulse"
-          >
-            TAP TO JOIN
-          </button>
-          <p className="mt-6 text-gray-600 text-sm uppercase tracking-widest">Session: {code}</p>
-        </div>
-      </main>
-    )
   }
 
   // LOADING
   if (phase === 'loading') {
     return (
       <main className="min-h-screen bg-[#0D0D0D] flex items-center justify-center">
-        {/* Audio always present in DOM */}
-        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
         <div className="text-center">
           <div className="w-16 h-16 border-4 border-[#FF4D00] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-gray-400 uppercase tracking-widest">Connecting...</p>
@@ -235,7 +192,6 @@ export default function SessionPage() {
   if (phase === 'ended' || error) {
     return (
       <main className="min-h-screen bg-[#0D0D0D] flex items-center justify-center px-4">
-        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
         <div className="text-center">
           <p className="text-[#FF4D00] text-xl font-bold mb-2">{error || 'Session Ended'}</p>
           <p className="text-gray-500 mb-6">This chant session is no longer active.</p>
@@ -253,7 +209,6 @@ export default function SessionPage() {
           isFlashing ? 'bg-[#FF4D00]' : 'bg-[#0D0D0D]'
         }`}
       >
-        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
         <div className="text-center slide-up">
           <p
             className={`text-6xl sm:text-8xl font-black uppercase leading-tight tracking-tight transition-colors duration-300 pulse-glow ${
@@ -273,11 +228,7 @@ export default function SessionPage() {
   // COUNTDOWN
   if (phase === 'countdown') {
     return (
-      <main
-        className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-4"
-        onClick={unlockAudio}
-      >
-        <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
+      <main className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-4">
         <div className="text-center">
           <p className="text-gray-400 uppercase tracking-widest text-sm mb-6">Chant launches in</p>
           <div
@@ -287,7 +238,6 @@ export default function SessionPage() {
             {countdown}
           </div>
 
-          {/* Sound is always unlocked by this point due to join overlay */}
           <p className="mt-4 text-green-500 text-sm uppercase tracking-widest">🔊 Sound ready</p>
 
           <p className="text-gray-500 uppercase tracking-widest text-sm mt-6">Get ready!</p>
@@ -306,7 +256,6 @@ export default function SessionPage() {
   // BUILDING — waiting for leader to launch
   return (
     <main className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center px-4">
-      <audio ref={audioRef} preload="auto" style={{ display: 'none' }} />
       <div className="text-center max-w-sm w-full">
         <div className="w-16 h-16 border-4 border-[#FF4D00] border-t-transparent rounded-full animate-spin mx-auto mb-6" />
         <p className="text-[#FF4D00] font-black uppercase tracking-widest text-lg mb-2">Waiting for Leader</p>
