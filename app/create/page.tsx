@@ -68,11 +68,15 @@ export default function CreatePage() {
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mr = new MediaRecorder(stream)
+      // Pick a MIME type supported by this browser (iOS needs mp4, Chrome prefers webm)
+      const mimeType = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg']
+        .find(t => MediaRecorder.isTypeSupported(t)) || ''
+      const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
       chunksRef.current = []
-      mr.ondataavailable = (e) => chunksRef.current.push(e.data)
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
       mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const type = mr.mimeType || 'audio/mp4'
+        const blob = new Blob(chunksRef.current, { type })
         setAudioBlob(blob)
         setAudioUrl(URL.createObjectURL(blob))
         stream.getTracks().forEach(t => t.stop())
@@ -81,7 +85,7 @@ export default function CreatePage() {
       mediaRecorderRef.current = mr
       setIsRecording(true)
     } catch (err) {
-      alert('Microphone access denied. Please allow microphone access.')
+      alert('Microphone access denied. Please allow microphone access in your browser settings.')
     }
   }
 
@@ -101,11 +105,15 @@ export default function CreatePage() {
     let uploadedAudioUrl: string | null = null
 
     if (audioBlob) {
-      const fileName = `${code}-${Date.now()}.webm`
-      const { data: uploadData } = await supabase.storage
+      const ext = audioBlob.type.includes('mp4') ? 'mp4' : audioBlob.type.includes('ogg') ? 'ogg' : 'webm'
+      const fileName = `${code}-${Date.now()}.${ext}`
+      const { data: uploadData, error: uploadError } = await supabase.storage
         .from('audio')
-        .upload(fileName, audioBlob, { contentType: 'audio/webm' })
-      if (uploadData) {
+        .upload(fileName, audioBlob, { contentType: audioBlob.type })
+      if (uploadError) {
+        console.error('Audio upload failed:', uploadError)
+        alert(`Audio upload failed: ${uploadError.message}. Session will be created without audio.`)
+      } else if (uploadData) {
         const { data: urlData } = supabase.storage.from('audio').getPublicUrl(fileName)
         uploadedAudioUrl = urlData.publicUrl
       }
